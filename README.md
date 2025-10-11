@@ -1,5 +1,6 @@
 # p-Blend
 Code and data for "p-Blend: Privacy- and Utility-Preserving Blendshape Perturbation Against Re-identification Attacks in Virtual Reality"
+ISMAR 2025 has concluded, and we will release all source code by October 20, 2025.
 
 Dataset Access
 The dataset used in this research can be downloaded from the following link: https://1drv.ms/u/c/ab8db1e1fd9a0c0c/EdJpnH7g3hdJn9pK2xdXCSABPt8vsCXbsohKEYaprE4r4w?e=Qk6fVA
