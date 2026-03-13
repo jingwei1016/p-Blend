@@ -1,6 +1,19 @@
 # p-Blend
 Code and data for "p-Blend: Privacy- and Utility-Preserving Blendshape Perturbation Against Re-identification Attacks in Virtual Reality"
-ISMAR 2025 has concluded, and we will release all source code by October 20, 2025.
+
+🛡️ Core Defense & Analysis
+perturb_data.py: The primary implementation of the p-Blend algorithm, applying semi-random, correlation-aware perturbation to blendshape data.
+correlation_analysis.py: Analyzes physiological inter-dependencies between facial blendshapes to drive the noise-sharing strategy.
+features_analysis.py: Performs feature importance analysis (MDI ranking) to identify which statistical metrics are most critical for identification.
+
+🧠 Re-identification Attack Baselines
+These scripts evaluate the vulnerability of blendshape data across different machine learning methods:
+main.py / train.py / model.py: End-to-end deep learning pipeline (LSTM, CNN, MLP) for identification using raw time-series data.
+MLP_Stat.py / svm_stat.py / KNN-Stat.py: Attacks using aggregated statistical features (Mean, Median, Std, etc.).WinVote-Stat.py: A sliding-window majority voting attack to evaluate re-identification robustness over time.
+
+🛠️ Data Processing
+data_spilt.py: Segments raw VR tracking logs into fixed-length windows (e.g., 5s or 10s) for standardized evaluation.
+dataset.py: Custom PyTorch Dataset loader for efficient handling of 52-dimensional facial blendshape sequences.
 
 Dataset Access
 The dataset used in this research can be downloaded from the following link: https://1drv.ms/u/c/ab8db1e1fd9a0c0c/EdJpnH7g3hdJn9pK2xdXCSABPt8vsCXbsohKEYaprE4r4w?e=Qk6fVA
