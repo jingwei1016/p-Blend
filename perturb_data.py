@@ -1,102 +1,122 @@
-# dataset_split.py
-"""
-Uniform & joint sample generator for all users and multiple app pairs.
-- Evenly spread sample start indices across the full sequence (uniform intervals).
-- Parse original raw files where each 3 lines describe one time step,
-  and the 2nd line contains 52-dim CSV features (same rule as your script).
-- Generate both train/test outputs for each (user, app) pair in one pass.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-Example:
-python dataset_split.py \
-  --base_path /path/to/blendshape_dataset \
-  --apps 360pano Immedu Sword Archery Parkour \
-  --train_root pico_1 --test_root pico_2 \
-  --face_file face/52.txt \
-  --second 1s \
-  --seq_len 20 --n_train 1000 --n_test 1000
+"""
+p-Blend: Privacy-preserving Blendshape Perturbation.
+Implements 'p-blend', 'semi-random-only', and 'pure-random' strategies.
 """
 
 import os
-import random
 import argparse
 import numpy as np
 
-def read_data(file_path):
-    """Read raw file: every 3 lines form a ‘time-step’; the 2nd line has 51-dim CSV features."""
-    data = []
-    with open(file_path, "r") as f:
-        lines = f.readlines()
-    for i in range(0, len(lines) - 1, 3):
-        if len(lines[i].strip()) > 0 and len(lines[i + 1].strip()) > 0:
-            feats = list(map(float, lines[i + 1].strip().split(",")))
-            data.append(feats)
-    return np.array(data, dtype=np.float32)
+# Highly correlated pairs from paper Table 5 for noise sharing
+HIGH_CORRELATION_PAIRS = [
+    (0, 12), (1, 13), (2, 45), (3, 30), (3, 36),
+    (4, 16), (6, 21), (6, 50), (8, 39), (11, 44),
+    (19, 21), (23, 49), (27, 40), (28, 38), (29, 37),
+    (30, 36), (31, 35), (33, 42), (46, 47)
+]
 
-def save_uniform_samples(data, output_file, num_samples, seq_len, rng):
-    """Uniformly spread sample windows across the sequence (interval bins)."""
-    total_steps = len(data) - seq_len
-    if total_steps <= 0:
-        print(f"[WARN] Not enough steps to cut windows of length={seq_len}: {output_file}")
-        return
-    interval = max(1, total_steps // num_samples)
+def generate_noise(input_dim: int, noise_type: str, mu: float, sigma: float, consider_correlation: bool) -> np.ndarray:
+    """Generate noise vector with optional correlation-aware sharing."""
+    if noise_type == 'normal':
+        noise = np.random.normal(mu, sigma, input_dim)
+    elif noise_type == 'laplace':
+        noise = np.random.laplace(mu, sigma, input_dim)
+    else:
+        raise ValueError("Use 'normal' or 'laplace'.")
+    
+    # Apply noise sharing for correlated features
+    if consider_correlation:
+        used_features = set()
+        for (f1, f2) in HIGH_CORRELATION_PAIRS:
+            if f1 not in used_features and f2 not in used_features:
+                noise[f2] = noise[f1]  
+                used_features.add(f1)
+                used_features.add(f2)
+                
+    return noise
 
-    with open(output_file, "w") as f:
-        for k in range(num_samples):
-            start_lo = k * interval
-            start_hi = min((k + 1) * interval, total_steps)
-            start_idx = rng.randint(start_lo, start_hi) if start_hi > start_lo else start_lo
-            sample = data[start_idx : start_idx + seq_len]
-            f.write(f"{k + 1}\n")
-            for step in sample:
-                f.write(",".join(map(str, step)) + "\n")
-            f.write("\n")
+def process_file(in_path: str, out_path: str, args: argparse.Namespace):
+    """Inject noise into blendshape file line by line."""
+    is_fixed_noise = args.method in ['p-blend', 'semi-random-only']
+    consider_corr = args.method == 'p-blend'
+
+    # Generate fixed offset for the entire sequence if using semi-random/p-blend
+    file_fixed_noise = None
+    if is_fixed_noise:
+        file_fixed_noise = generate_noise(args.input_dim, args.noise_type, args.mu, args.sigma, consider_corr)
+
+    with open(in_path, 'r') as fin, open(out_path, 'w') as fout:
+        for line in fin:
+            s = line.strip()
+            
+            if not s:
+                fout.write("\n")
+                continue
+                
+            if s.isdigit():
+                fout.write(line)
+                continue
+                
+            try:
+                feats = np.array(list(map(float, s.split(','))), dtype=np.float32)
+                
+                # Per-frame noise for pure-random, otherwise use fixed offset
+                current_noise = file_fixed_noise if is_fixed_noise else generate_noise(
+                    args.input_dim, args.noise_type, args.mu, args.sigma, consider_corr
+                )
+                
+                noisy_feats = np.clip(feats + current_noise, 0.0, 1.0)
+                fout.write(",".join(f"{v:.6f}" for v in noisy_feats) + "\n")
+                
+            except Exception as e:
+                print(f"[WARN] Parsing error in {in_path}: {e}")
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--base_path", required=True, type=str)
-    ap.add_argument("--apps", nargs="+", required=True,
-                    help="List of app folder names under each root (e.g., 360pano ... Sword...)")
-    ap.add_argument("--train_root", default="", type=str)
-    ap.add_argument("--test_root", default="pico_2", type=str)
-    ap.add_argument("--face_file", default="face/52.txt", type=str,
-                    help="relative file path under each (root/app)")
-    ap.add_argument("--second", default="1s", type=str,
-                    help="tag appended to output filenames")
-    ap.add_argument("--seq_len", default=20, type=int)
-    ap.add_argument("--n_train", default=1000, type=int)
-    ap.add_argument("--n_test", default=1000, type=int)
-    ap.add_argument("--seed", default=42, type=int)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="Apply p-Blend perturbation.")
+    
+    # Path parameters
+    parser.add_argument("--base_path", type=str, required=True, help="Root folder for users")
+    parser.add_argument("--app", type=str, default="Sword", help="Application name")
+    parser.add_argument("--second", type=str, default="10s", help="Time segment length")
+    parser.add_argument("--n_samples", type=str, default="2000", help="Sample count suffix")
+    parser.add_argument("--session", type=str, default="two", help="Session ID")
+    
+    # Perturbation parameters
+    parser.add_argument("--method", type=str, default="p-blend", 
+                        choices=["p-blend", "semi-random-only", "pure-random"])
+    parser.add_argument("--noise_type", type=str, default="laplace", choices=["normal", "laplace"])
+    parser.add_argument("--mu", type=float, default=0.0)
+    parser.add_argument("--sigma", type=float, default=0.05, help="Noise intensity (b)")
+    parser.add_argument("--input_dim", type=int, default=52)
+    
+    args = parser.parse_args()
+    
+    target_filename = f"session_{args.session}_{args.app}_{args.second}_{args.n_samples}.txt"
+    out_filename = f"session_{args.session}_{args.app}_{args.second}_{args.n_samples}_{args.method}_{args.noise_type}_{args.sigma}.txt"
+    
+    print("-" * 30)
+    print(f"Strategy: {args.method.upper()}")
+    print(f"Intensity: {args.sigma}")
+    print("-" * 30)
 
-    rng = random.Random(args.seed)
-
+    processed_count = 0
     for user_folder in os.listdir(args.base_path):
         user_dir = os.path.join(args.base_path, user_folder)
-        if not os.path.isdir(user_dir):
+        if not (os.path.isdir(user_dir) and user_folder[0].isdigit()):
             continue
+            
+        in_path = os.path.join(user_dir, target_filename)
+        out_path = os.path.join(user_dir, out_filename)
+        
+        if os.path.exists(in_path):
+            process_file(in_path, out_path, args)
+            processed_count += 1
+            print(f"Done: User {user_folder}")
 
-        for app in args.apps:
-            in_train = os.path.join(user_dir, args.train_root, app, args.face_file)
-            in_test  = os.path.join(user_dir, args.test_root,  app, args.face_file)
-
-            if not (os.path.exists(in_train) and os.path.exists(in_test)):
-                print(f"[SKIP] Missing train/test for user={user_folder}, app={app}")
-                continue
-
-            # Read raw data
-            train_data = read_data(in_train)
-            test_data  = read_data(in_test)
-
-            # Output files (joint naming)
-            out_train = os.path.join(user_dir, f"{args.train_root}_{app}_{args.second}_{args.n_train}.txt")
-            out_test  = os.path.join(user_dir, f"{args.test_root}_{app}_{args.second}_{args.n_test}.txt")
-
-            save_uniform_samples(train_data, out_train, args.n_train, args.seq_len, rng)
-            save_uniform_samples(test_data,  out_test,  args.n_test,  args.seq_len, rng)
-
-            print(f"[OK] user={user_folder} app={app} -> {os.path.basename(out_train)}, {os.path.basename(out_test)}")
+    print(f"\n[Finished] Processed {processed_count} users.")
 
 if __name__ == "__main__":
     main()
-
-
